@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/yourname/jwks-server/internal/jwks"
+	"github.com/Rajp682/jwks-server/internal/jwks"
 )
 
 func main() {

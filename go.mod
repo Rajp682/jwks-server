@@ -1,4 +1,4 @@
-module github.com/yourname/jwks-server
+module github.com/Rajp682/jwks-server
 
 go 1.22
 
