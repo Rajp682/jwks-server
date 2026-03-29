@@ -4,20 +4,25 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"time"
 
 	"github.com/Rajp682/jwks-server/internal/jwks"
 )
 
 func main() {
-	// Active key expires in 24h; expired key expired 1h ago.
-	km, err := jwks.NewKeyManager(24*time.Hour, -1*time.Hour)
+	// Open (or create) the SQLite database file.
+	db, err := jwks.OpenDB("totally_not_my_privateKeys.db")
 	if err != nil {
-		log.Fatalf("failed to init key manager: %v", err)
+		log.Fatalf("failed to open db: %v", err)
+	}
+	defer db.Close()
+
+	// Seed the DB with one valid and one expired key on startup.
+	if err := db.SeedKeys(); err != nil {
+		log.Fatalf("failed to seed keys: %v", err)
 	}
 
 	mux := http.NewServeMux()
-	jwks.RegisterRoutes(mux, km)
+	jwks.RegisterRoutes(mux, db)
 
 	addr := ":8080"
 	if v := os.Getenv("ADDR"); v != "" {
