@@ -9,56 +9,69 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// server holds a reference to the DB and a clock function for testability.
 type server struct {
-	km  *KeyManager
+	db  *DB
 	now func() time.Time
 }
 
-func RegisterRoutes(mux *http.ServeMux, km *KeyManager) {
-	s := &server{km: km, now: time.Now}
+// RegisterRoutes wires up the HTTP endpoints.
+func RegisterRoutes(mux *http.ServeMux, db *DB) {
+	s := &server{db: db, now: time.Now}
 
 	mux.HandleFunc("/jwks", s.handleJWKS)
-	mux.HandleFunc("/auth", s.handleAuth)
-
-	// Optional: common well-known path for JWKS.
 	mux.HandleFunc("/.well-known/jwks.json", s.handleJWKS)
+	mux.HandleFunc("/auth", s.handleAuth)
 }
 
+// handleJWKS serves all unexpired public keys as a JWKS JSON response.
 func (s *server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	b, err := s.km.JWKS(s.now())
+
+	pairs, err := s.db.GetAllValidKeys(s.now())
 	if err != nil {
-		http.Error(w, "failed to build jwks", http.StatusInternalServerError)
+		http.Error(w, "failed to read keys", http.StatusInternalServerError)
 		return
 	}
+
+	keys := make([]JWK, 0, len(pairs))
+	for _, kp := range pairs {
+		keys = append(keys, publicJWK(kp))
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(b)
+	_ = json.NewEncoder(w).Encode(JWKS{Keys: keys})
 }
 
+// handleAuth issues a signed JWT. Uses an expired key if ?expired is in the query.
 func (s *server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 
-	// If "expired" query parameter is present (any value), use expired key and expired exp.
-	issueExpired := false
-	if _, ok := r.URL.Query()["expired"]; ok {
-		issueExpired = true
-	}
-
-	var kp KeyPair
-	if issueExpired {
-		kp = s.km.Expired()
-	} else {
-		kp = s.km.Active()
-	}
-
 	now := s.now()
+
+	// Determine whether to use an expired or valid key.
+	_, issueExpired := r.URL.Query()["expired"]
+
+	var (
+		kp  *KeyPair
+		err error
+	)
+	if issueExpired {
+		kp, err = s.db.GetExpiredKey(now)
+	} else {
+		kp, err = s.db.GetValidKey(now)
+	}
+	if err != nil {
+		http.Error(w, "no suitable key found", http.StatusInternalServerError)
+		return
+	}
 
 	claims := jwt.MapClaims{
 		"sub": "fake-user",
@@ -76,10 +89,8 @@ func (s *server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return JSON to be unambiguous for clients.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"token": strings.TrimSpace(signed),
 	})
